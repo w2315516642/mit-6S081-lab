@@ -146,15 +146,49 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+// #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+void
+vmprint_level(pagetable_t pagetable, int level, uint64 base)
+{
+  int num_pte = 512;
+  for (int i = 0; i < num_pte; i++) {
+    pte_t *pte = &pagetable[i];
+    if (*pte & PTE_V) {
+      pagetable_t pa = (pagetable_t)PTE2PA(*pte);
+      void *start = (void *)(base | ((uint64)(i) << PXSHIFT(level)));
 
-#if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+      for (int l = 3 - level; l > 0; l--) {
+        printk(" ..");
+      }
+      printk("%p: pte %p pa %p", start, (void *)(*pte), pa);
+      if (PTE_LEAF(*pte)) {
+        printk(" ");
+        if (*pte & PTE_R)
+          printk("R");
+        if (*pte & PTE_W)
+          printk("W");
+        if (*pte & PTE_X)
+          printk("X");
+        if (*pte & PTE_U)
+          printk("U");
+      }
+      printk("\n");
+      // 递归处理
+      if (level > 0 && !PTE_LEAF(*pte)) {
+        vmprint_level(pa, level - 1, (uint64)start);
+      }
+    }
+  }
+}
+
 void
 vmprint(pagetable_t pagetable)
 {
   // your code here
+  printk("page table %p\n", (void *)pagetable);
+  vmprint_level(pagetable, 2, (uint64)0);
 }
-#endif
-
+// #endif
 
 // add a mapping to the kernel page table.
 // only used when booting.
@@ -243,7 +277,6 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     *pte = 0;
   }
 }
-
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
@@ -404,7 +437,6 @@ copyout(pagetable_t pagetable, uint64 psz, uint64 dstva, char *src, uint64 len)
       return -1;
     }
 
-
     // forbid copyout over read-only user text pages.
     if ((*pte & PTE_W) == 0)
       return -1;
@@ -496,7 +528,6 @@ copyinstr(pagetable_t pagetable, uint64 psz, char *dst, uint64 srcva,
   }
 }
 
-
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
 // returns 0 if va is invalid or already mapped, or if
@@ -505,7 +536,6 @@ uint64
 vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
 {
   uint64 mem;
-
 
   if (va >= psz)
     return 0;
@@ -536,5 +566,3 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
-
-
