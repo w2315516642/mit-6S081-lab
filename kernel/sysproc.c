@@ -73,7 +73,6 @@ sys_pause(void)
   int n;
   uint ticks0;
 
-
   argint(0, &n);
   if (n < 0)
     n = 0;
@@ -93,7 +92,6 @@ sys_pause(void)
   return 0;
 }
 
-
 #ifdef LAB_PGTBL
 int
 sys_vmprint(void)
@@ -106,14 +104,56 @@ sys_vmprint(void)
 }
 #endif
 
-#ifdef LAB_PGTBL
+// #ifdef LAB_PGTBL
 int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
-  return 0;
+  uint64 base;
+  int len;
+  uint64 mask;
+
+  argaddr(0, &base);
+  argint(1, &len);
+  argaddr(2, &mask);
+
+  pagetable_t pgtbl = myproc()->pagetable;
+
+  if (base >= MAXVA)
+    return -1;
+
+  uint64 aligned_base = base / PGSIZE * PGSIZE;
+  int max_len = (int)((MAXVA - aligned_base) / PGSIZE);
+  if (len <= 0 || len > max_len || len > 1024)
+    return -1;
+
+  pte_t *pte;
+  unsigned char bits[128]; // 最大支持 1024 页
+  for (int i = 0; i < 128; i++) {
+    bits[i] = 0;
+  }
+
+  for (int i = 0; i < len; i++) {
+    if ((pte = walk(pgtbl, base + i * PGSIZE, 0)) == 0)
+      return -1;
+    if ((*pte & PTE_V) == 0)
+      return -1;
+    if ((*pte & PTE_U) == 0)
+      return -1;
+
+    if (*pte & PTE_A) {
+      *pte &= ~PTE_A;
+
+      int idx = i >> 3;
+      int bit = i & 7;
+      bits[idx] |= (unsigned char)(1 << bit);
+    }
+  }
+  if (copyout(pgtbl, myproc()->sz, mask, (char *)bits, (len + 7) / 8) == 0)
+    return 0;
+  return -1;
 }
-#endif
+// #endif
 
 uint64
 sys_kill(void)

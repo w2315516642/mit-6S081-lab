@@ -146,7 +146,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
-// #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+#if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
 void
 vmprint_level(pagetable_t pagetable, int level, uint64 base)
 {
@@ -188,7 +188,7 @@ vmprint(pagetable_t pagetable)
   printk("page table %p\n", (void *)pagetable);
   vmprint_level(pagetable, 2, (uint64)0);
 }
-// #endif
+#endif
 
 // add a mapping to the kernel page table.
 // only used when booting.
