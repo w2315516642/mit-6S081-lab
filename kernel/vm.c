@@ -115,6 +115,38 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
   return &pagetable[PX(0, va)];
 }
 
+uint64
+vmcow(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte == 0)
+    return 0;
+  if ((*pte & PTE_V) == 0)
+    return 0;
+  if ((*pte & PTE_COW) == 0)
+    return 0;
+  if ((*pte & PTE_U) == 0)
+    return 0;
+
+  char *mem;
+  uint64 pa = PTE2PA(*pte);
+  uint flags = PTE_FLAGS(*pte);
+
+  // 分配新物理内存
+  if ((mem = kalloc()) == 0)
+    return 0;
+  memmove(mem, (char *)pa, PGSIZE);
+
+  // 去掉 COW 标志，恢复写权限
+  flags &= (~PTE_COW);
+  flags |= PTE_W;
+  *pte = (PA2PTE(mem) | flags);
+
+  kfree((void *)pa);
+
+  return (uint64)mem;
+}
+
 // Look up a virtual address, return the physical address,
 // or 0 if not mapped.
 // Can only be used to look up user pages.
@@ -301,7 +333,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for (i = 0; i < sz; i += PGSIZE) {
     if ((pte = walk(old, i, 0)) == 0)
@@ -310,13 +342,21 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       continue; // physical page hasn't been allocated
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if ((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char *)pa, PGSIZE);
-    if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
-      kfree(mem);
+    if ((flags & PTE_W) != 0) {
+      flags &= (~PTE_W);
+      flags |= PTE_COW;
+
+      *pte &= (~PTE_W);
+      *pte |= PTE_COW;
+    }
+    // if ((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char *)pa, PGSIZE);
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0) {
+      // kfree(mem);
       goto err;
     }
+    kref_inc((void *)pa);
   }
   return 0;
 
@@ -360,6 +400,11 @@ copyout(pagetable_t pagetable, uint64 psz, uint64 dstva, char *src, uint64 len)
     }
 
     pte = walk(pagetable, va0, 0);
+    if (*pte & PTE_COW) {
+      pa0 = vmcow(pagetable, va0);
+      if (pa0 == 0)
+        return -1;
+    }
     // forbid copyout over read-only user text pages.
     if ((*pte & PTE_W) == 0)
       return -1;
@@ -464,7 +509,12 @@ vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
     return 0;
   va = PGROUNDDOWN(va);
   if (ismapped(pagetable, va)) {
-    return 0;
+    if (read)
+      return 0;
+
+    if ((mem = vmcow(pagetable, va)) == 0)
+      return 0;
+    return mem;
   }
   mem = (uint64)kalloc();
   if (mem == 0)

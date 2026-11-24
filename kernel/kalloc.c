@@ -9,6 +9,9 @@
 #include "riscv.h"
 #include "defs.h"
 
+#define PA2IDX(pa) (((uint64)(pa) - KERNBASE) / PGSIZE)
+
+void kref_inc(void *pa);
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -21,6 +24,7 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  int ref_cnt[(PHYSTOP - KERNBASE) / PGSIZE];
 } kmem;
 
 void
@@ -31,12 +35,23 @@ kinit()
 }
 
 void
+kref_inc(void *pa)
+{
+  acquire(&kmem.lock);
+  int *cnt = &kmem.ref_cnt[PA2IDX(pa)];
+  *cnt += 1;
+  release(&kmem.lock);
+}
+
+void
 freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char *)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
+  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE) {
+    kref_inc((void *)p);
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -51,14 +66,25 @@ kfree(void *pa)
   if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run *)pa;
-
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+
+  uint64 ref_idx = PA2IDX(pa);
+  if (kmem.ref_cnt[ref_idx] > 0) {
+    kmem.ref_cnt[ref_idx] -= 1;
+    if (kmem.ref_cnt[ref_idx] <= 0) {
+      // Fill with junk to catch dangling refs.
+      memset(pa, 1, PGSIZE);
+
+      r = (struct run *)pa;
+
+      // acquire(&kmem.lock);
+      r->next = kmem.freelist;
+      kmem.freelist = r;
+    }
+  } else {
+    panic("kfree: ref_cnt is zero.");
+  }
+
   release(&kmem.lock);
 }
 
@@ -72,8 +98,10 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if (r)
+  if (r) {
     kmem.freelist = r->next;
+    kmem.ref_cnt[PA2IDX(r)] = 1;
+  }
   release(&kmem.lock);
 
   if (r)
