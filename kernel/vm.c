@@ -7,6 +7,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "sleeplock.h"
+#include "fcntl.h"
+#include "file.h"
 
 /*
  * the kernel's page table.
@@ -460,12 +463,61 @@ vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
 {
   uint64 mem;
 
-  if (va >= psz)
+  struct proc *p = myproc();
+  struct vma *vma;
+  int i;
+  for (i = 0; i < NVMA; i++) {
+    vma = &p->vmas[i];
+    if (vma->file == 0)
+      continue;
+    if (va >= vma->va && va < vma->va + vma->len)
+      break;
+  }
+
+  if (i == NVMA && va >= psz)
     return 0;
   va = PGROUNDDOWN(va);
   if (ismapped(pagetable, va)) {
     return 0;
   }
+  // mmap
+  if (i < NVMA) {
+    if (read && (vma->prot & PROT_READ) == 0)
+      return 0;
+    if (!read && (vma->prot & PROT_WRITE) == 0)
+      return 0;
+    mem = (uint64)kalloc();
+    if (mem == 0)
+      return 0;
+    memset((void *)mem, 0, PGSIZE);
+    uint64 off = vma->off + (va - vma->va);
+
+    struct file *f = vma->file;
+    ilock(f->ip);
+    uint64 size;
+    if (PGSIZE > vma->va + vma->len - va)
+      size = vma->va + vma->len - va;
+    else
+      size = PGSIZE;
+    if (readi(f->ip, 0, mem, off, size) < 0) {
+      iunlock(f->ip);
+      kfree((void *)mem);
+      return 0;
+    }
+    iunlock(f->ip);
+
+    int perm = PTE_U | PTE_V;
+    if (vma->prot & PROT_READ)
+      perm = perm | PTE_R;
+    if (vma->prot & PROT_WRITE)
+      perm = perm | PTE_W | PTE_R;
+    if (mappages(pagetable, va, PGSIZE, mem, perm) != 0) {
+      kfree((void *)mem);
+      return 0;
+    }
+    return mem;
+  }
+
   mem = (uint64)kalloc();
   if (mem == 0)
     return 0;

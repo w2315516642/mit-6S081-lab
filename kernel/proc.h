@@ -76,6 +76,15 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+struct vma {
+  uint64 va;         // User address
+  uint64 len;        // Len of mmap address
+  int flags;         // MAP_SHARED or MAP_PRIVATE
+  int prot;          // Protection: readable/writable
+  struct file *file; // Mapped file
+  uint64 off;        // Offset of file
+};
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -100,5 +109,6 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+  struct vma vmas[NVMA];       // Mapped vmas
   char name[16];               // Process name (debugging)
 };

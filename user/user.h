@@ -1,6 +1,8 @@
 #ifdef LAB_MMAP
 typedef unsigned long size_t;
 typedef long int off_t;
+void *mmap(void *, size_t, int, int, int, off_t);
+int munmap(void *, size_t);
 #endif
 
 #define SBRK_ERROR ((char *)-1)
@@ -30,6 +32,7 @@ char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);
 int sync(void);
+
 #ifdef LAB_NET
 int bind(uint16);
 int unbind(uint16);
@@ -41,7 +44,7 @@ int ugetpid(void);
 uint64 pgpte(void *);
 void vmprint(void);
 int pgaccess(void *base, int len, void *mask);
-int ksupernpte(uint64*, uint64 *);
+int ksupernpte(uint64 *, uint64 *);
 #endif
 #ifdef LAB_LOCK
 int rwlktest(int resetflag);

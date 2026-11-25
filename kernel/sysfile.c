@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -527,4 +528,96 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+static uint64
+find_mmap_addr(struct proc *p, uint64 len)
+{
+  uint64 top = TRAPFRAME;
+
+  if (len == 0 || len > top)
+    return 0;
+
+  uint64 size = PGROUNDUP(len);
+
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *vma = &p->vmas[i];
+    if (vma->file != 0 && vma->va < top) {
+      top = vma->va;
+    }
+  }
+
+  if (size > top)
+    return 0;
+
+  uint64 start = top - size;
+  if (start < PGROUNDUP(p->sz))
+    return 0;
+  return start;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, len;
+  int prot, flags, fd;
+  uint64 offset;
+  struct file *f;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  if (argfd(4, &fd, &f) < 0)
+    return -1;
+  argaddr(5, &offset);
+
+  if (addr != 0 || offset != 0)
+    return -1;
+  if (len == 0 || len > MAXVA - addr)
+    return -1;
+  if ((prot & (PROT_READ | PROT_WRITE)) == 0)
+    return -1;
+  if (flags != MAP_SHARED && flags != MAP_PRIVATE)
+    return -1;
+  if (f->type != FD_INODE)
+    return -1;
+  else {
+    if (!f->readable)
+      return -1;
+    ilock(f->ip);
+    if (f->ip->type != T_FILE) {
+      iunlock(f->ip);
+      return -1;
+    }
+    iunlock(f->ip);
+  }
+  if (flags == MAP_SHARED && (prot & PROT_WRITE) && !f->writable)
+    return -1;
+
+  int i;
+  struct proc *p = myproc();
+  for (i = 0; i < NVMA; i++) {
+    if (p->vmas[i].file == 0)
+      break;
+  }
+  if (i == NVMA)
+    return -1;
+  struct vma *vma = &p->vmas[i];
+  vma->va = find_mmap_addr(p, len);
+  if (vma->va == 0)
+    return -1;
+  vma->file = filedup(f);
+  vma->flags = flags;
+  vma->prot = prot;
+  vma->len = len;
+  vma->off = offset;
+
+  return vma->va;
+}
+
+uint64
+sys_munmap(void)
+{
+  return -1;
 }
