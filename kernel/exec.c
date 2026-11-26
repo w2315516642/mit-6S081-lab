@@ -130,6 +130,8 @@ kexec(char *path, char **argv)
   safestrcpy(p->name, last, sizeof(p->name));
 
   // Commit to the user image.
+  // Failed exec leaves VMAs intact; successful exec drops the old mappings.
+  vmafree(p);
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;

@@ -454,8 +454,7 @@ copyinstr(pagetable_t pagetable, uint64 psz, char *dst, uint64 srcva,
   }
 }
 
-// allocate and map user memory if process is referencing a page
-// that was lazily allocated in sys_sbrk().
+// Resolve a lazy heap or file-backed mapping fault.
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
 uint64
@@ -465,18 +464,19 @@ vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
 
   struct proc *p = myproc();
   struct vma *vma;
+  uint64 pageva = PGROUNDDOWN(va);
   int i;
   for (i = 0; i < NVMA; i++) {
     vma = &p->vmas[i];
-    if (vma->file == 0)
+    if (pagetable != p->pagetable || vma->file == 0)
       continue;
-    if (va >= vma->va && va < vma->va + vma->len)
+    if (pageva >= vma->va && pageva - vma->va < vma->len)
       break;
   }
 
   if (i == NVMA && va >= psz)
     return 0;
-  va = PGROUNDDOWN(va);
+  va = pageva;
   if (ismapped(pagetable, va)) {
     return 0;
   }
@@ -499,7 +499,9 @@ vmfault(pagetable_t pagetable, uint64 psz, uint64 va, int read)
       size = vma->va + vma->len - va;
     else
       size = PGSIZE;
-    if (readi(f->ip, 0, mem, off, size) < 0) {
+    // Beyond EOF, keep the zero page. Checking first also avoids truncating
+    // a large mapping's 64-bit offset to readi's 32-bit argument.
+    if (off < f->ip->size && readi(f->ip, 0, mem, off, size) < 0) {
       iunlock(f->ip);
       kfree((void *)mem);
       return 0;

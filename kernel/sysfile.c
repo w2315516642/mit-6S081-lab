@@ -530,22 +530,29 @@ sys_pipe(void)
   return 0;
 }
 
-static uint64
-find_mmap_addr(struct proc *p, uint64 len)
+// The heap must stay below every file mapping.
+uint64
+vmaheaplimit(struct proc *p)
 {
   uint64 top = TRAPFRAME;
-
-  if (len == 0 || len > top)
-    return 0;
-
-  uint64 size = PGROUNDUP(len);
-
   for (int i = 0; i < NVMA; i++) {
     struct vma *vma = &p->vmas[i];
     if (vma->file != 0 && vma->va < top) {
       top = vma->va;
     }
   }
+  return top;
+}
+
+static uint64
+find_mmap_addr(struct proc *p, uint64 len)
+{
+  uint64 top = vmaheaplimit(p);
+
+  if (len == 0 || len > top)
+    return 0;
+
+  uint64 size = PGROUNDUP(len);
 
   if (size > top)
     return 0;
@@ -616,8 +623,133 @@ sys_mmap(void)
   return vma->va;
 }
 
+static int
+write_inode(struct file *f, uint64 addr, uint64 off, int n)
+{
+  if (f->type != FD_INODE)
+    return -1;
+
+  int r;
+  int max = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+  int i = 0;
+  while (i < n) {
+    int n1 = n - i;
+    if (n1 > max)
+      n1 = max;
+
+    begin_op();
+    ilock(f->ip);
+    if (f->ip->size <= off) {
+      iunlock(f->ip);
+      end_op();
+      return i;
+    }
+    int islast = (f->ip->size - off) <= n1;
+    n1 = islast ? (f->ip->size - off) : n1;
+    if ((r = writei(f->ip, 0, addr + i, off, n1)) > 0)
+      off += r;
+    iunlock(f->ip);
+    end_op();
+
+    if (r != n1)
+      return -1;
+
+    if (islast) {
+      i += r;
+      break;
+    }
+    i += r;
+  }
+  return i;
+}
+
+// No process spinlock may be held: file writeback can sleep.
+int
+vmaunmap(struct proc *p, uint64 addr, uint64 len)
+{
+  if (PGROUNDDOWN(addr) != addr)
+    return -1;
+  if (len == 0 || addr >= MAXVA || len >= MAXVA - addr)
+    return -1;
+
+  struct vma *vma;
+
+  uint64 unmap_end = PGROUNDUP(addr + len);
+  uint64 start, end;
+  int i;
+  for (i = 0; i < NVMA; i++) {
+    vma = &p->vmas[i];
+    if (vma->file == 0)
+      continue;
+
+    start = vma->va;
+    end = vma->va + vma->len;
+    if (addr == start || unmap_end == PGROUNDUP(end))
+      break;
+  }
+  if (i == NVMA)
+    return -1;
+  if (addr < start || addr >= end || unmap_end > PGROUNDUP(end))
+    return -1;
+
+  // Remove whole pages, but write back and account only for VMA bytes.
+  if (unmap_end > end)
+    unmap_end = end;
+  len = unmap_end - addr;
+
+  int isshared = vma->flags & MAP_SHARED;
+  for (uint64 l = 0; l < len; l += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, addr + l, 0);
+    if (pte == 0 || *pte == 0)
+      continue;
+    if ((*pte & PTE_V) == 0)
+      continue;
+
+    uint64 l0 = (len - l) > PGSIZE ? PGSIZE : (len - l);
+    uint64 va0 = addr + l;
+    if (isshared) {
+      uint64 pa = PTE2PA(*pte);
+      uint64 off = vma->off + (va0 - vma->va);
+      if (write_inode(vma->file, pa, off, l0) < 0)
+        return -1;
+    }
+    uvmunmap(p->pagetable, va0, 1, 1);
+  }
+
+  int ishead = addr == start;
+  if (ishead) {
+    vma->va = unmap_end;
+    vma->off += len;
+  }
+  vma->len -= len;
+  if (vma->len == 0) {
+    fileclose(vma->file);
+    memset(vma, 0, sizeof(*vma));
+  }
+  return 0;
+}
+
+// Exit/exec must release all mappings even if a file write fails.
+void
+vmafree(struct proc *p)
+{
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *vma = &p->vmas[i];
+    if (vma->file == 0)
+      continue;
+    if (vmaunmap(p, vma->va, vma->len) < 0) {
+      uvmunmap(p->pagetable, vma->va, PGROUNDUP(vma->len) / PGSIZE, 1);
+      fileclose(vma->file);
+      memset(vma, 0, sizeof(*vma));
+    }
+  }
+}
+
 uint64
 sys_munmap(void)
 {
-  return -1;
+  uint64 addr, len;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  return vmaunmap(myproc(), addr, len);
 }

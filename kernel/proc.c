@@ -124,6 +124,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  memset(p->vmas, 0, sizeof(p->vmas));
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -240,7 +241,8 @@ growproc(int n)
 
   sz = p->sz;
   if (n > 0) {
-    if (sz + n > TRAPFRAME) {
+    uint64 limit = vmaheaplimit(p);
+    if (sz > limit || (uint64)n > limit - sz) {
       return -1;
     }
     if ((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
@@ -274,6 +276,15 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // The child faults in its own file pages, as allowed by the mmap lab.
+  // Inherit only after uvmcopy succeeds, so its failure owns no VMA refs.
+  for (i = 0; i < NVMA; i++) {
+    if (p->vmas[i].file) {
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -329,6 +340,9 @@ kexit(int status)
 
   if (p == initproc)
     panic("init exiting");
+
+  // Complete writeback before taking wait_lock or p->lock.
+  vmafree(p);
 
   // Close all open files.
   for (int fd = 0; fd < NOFILE; fd++) {
